@@ -13,6 +13,7 @@ const comprasRoutes = require('./routes/comprasRoutes');
 const freteRoutes = require('./routes/freteRoutes');
 const addressRoutes = require('./routes/addressRoutes');
 const melhorEnvioRoutes = require('./routes/melhorEnvioRoutes');
+const categoriasRoutes = require('./routes/categoriasRoutes');
 const { initTokenTable } = require('./services/melhorEnvioAuth');
 
 const app = express();
@@ -41,6 +42,7 @@ app.use('/compras', comprasRoutes);
 app.use('/frete', freteRoutes);
 app.use('/endereco', addressRoutes);
 app.use('/melhor-envio', melhorEnvioRoutes);
+app.use('/categorias', categoriasRoutes);
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 module.exports = app;

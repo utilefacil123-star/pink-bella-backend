@@ -82,20 +82,33 @@ router.get('/', async (req, res) => {
             }
 
             // --- 4. Buscar Detalhes dos Produtos e Verificar Estoque ---
-            // Usando Promise.all para buscar produtos em paralelo
             const produtosPromises = itens.map(item => {
                 return new Promise((resolve, reject) => {
-                    db.get('SELECT id, nome, preco, estoque FROM produtos WHERE id = ?', [item.produto_id], (err, row) => {
+                    db.get('SELECT id, nome, preco, estoque FROM produtos WHERE id = ?', [item.produto_id], async (err, row) => {
                         if (err) return reject(err);
-                        if (!row) {
-                            return reject(new Error(`Produto com ID ${item.produto_id} não encontrado.`));
+                        if (!row) return reject(new Error(`Produto com ID ${item.produto_id} não encontrado.`));
+
+                        // Verificação de estoque: usa variação se informada, senão usa estoque do produto
+                        if (item.variacao_id) {
+                            try {
+                                const varResult = await db.query(
+                                    'SELECT id, estoque FROM produto_variacoes WHERE id = $1 AND produto_id = $2 AND ativo = TRUE',
+                                    [item.variacao_id, item.produto_id]
+                                );
+                                const variacao = varResult.rows[0];
+                                if (!variacao) return reject(new Error(`Variação não encontrada para o produto: ${row.nome}.`));
+                                if (variacao.estoque < item.quantidade) {
+                                    return reject(new Error(`Estoque insuficiente na variação selecionada de "${row.nome}". Disponível: ${variacao.estoque}, Solicitado: ${item.quantidade}.`));
+                                }
+                            } catch (e) { return reject(e); }
+                        } else {
+                            if (row.estoque < item.quantidade) {
+                                return reject(new Error(`Estoque insuficiente para o produto: ${row.nome}. Disponível: ${row.estoque}, Solicitado: ${item.quantidade}.`));
+                            }
                         }
-                        // **CORREÇÃO AQUI:** Verificação de estoque com a coluna correta 'estoque'
-                        if (row.estoque < item.quantidade) {
-                            return reject(new Error(`Estoque insuficiente para o produto: ${row.nome}. Disponível: ${row.estoque}, Solicitado: ${item.quantidade}.`));
-                        }
-                        quantidadeTotalDeItens += item.quantidade; // Soma a quantidade para o cálculo do frete
-                        resolve({ ...row, quantidade_comprada: item.quantidade });
+
+                        quantidadeTotalDeItens += item.quantidade;
+                        resolve({ ...row, quantidade_comprada: item.quantidade, variacao_id: item.variacao_id || null });
                     });
                 });
             });
@@ -204,14 +217,9 @@ router.get('/', async (req, res) => {
                     for (const item of produtosCompradosDetalhes) {
                         await new Promise((resolve, reject) => {
                             db.run(
-                                `INSERT INTO itens_compra (compra_id, produto_id, quantidade, preco_unitario_no_momento_da_compra)
-                                VALUES (?, ?, ?, ?)`,
-                                [
-                                    compraId,
-                                    item.id,
-                                    item.quantidade_comprada,
-                                    item.preco
-                                ],
+                                `INSERT INTO itens_compra (compra_id, produto_id, variacao_id, quantidade, preco_unitario_no_momento_da_compra)
+                                VALUES (?, ?, ?, ?, ?)`,
+                                [compraId, item.id, item.variacao_id || null, item.quantidade_comprada, item.preco],
                                 function(err) {
                                     if (err) return reject(err);
                                     resolve();
@@ -219,19 +227,32 @@ router.get('/', async (req, res) => {
                             );
                         });
 
-                        await new Promise((resolve, reject) => {
-                            db.run(
-                                `UPDATE produtos SET estoque = estoque - ? WHERE id = ?`,
-                                [item.quantidade_comprada, item.id],
-                                function(err) {
-                                    if (err) return reject(err);
-                                    if (this.changes === 0) {
-                                        return reject(new Error(`Falha ao dar baixa no estoque do produto ID ${item.id}. Nenhuma linha afetada.`));
-                                    }
-                                    resolve();
-                                }
+                        if (item.variacao_id) {
+                            // Baixa no estoque da variação e sincroniza produto
+                            await db.query(
+                                'UPDATE produto_variacoes SET estoque = estoque - $1 WHERE id = $2',
+                                [item.quantidade_comprada, item.variacao_id]
                             );
-                        });
+                            await db.query(
+                                `UPDATE produtos SET estoque = (
+                                   SELECT COALESCE(SUM(estoque), 0)
+                                   FROM produto_variacoes WHERE produto_id = $1 AND ativo = TRUE
+                                 ) WHERE id = $1`,
+                                [item.id]
+                            );
+                        } else {
+                            await new Promise((resolve, reject) => {
+                                db.run(
+                                    `UPDATE produtos SET estoque = estoque - ? WHERE id = ?`,
+                                    [item.quantidade_comprada, item.id],
+                                    function(err) {
+                                        if (err) return reject(err);
+                                        if (this.changes === 0) return reject(new Error(`Falha ao dar baixa no estoque do produto ID ${item.id}.`));
+                                        resolve();
+                                    }
+                                );
+                            });
+                        }
                     }
 
                     // --- 9. Finalizar a transação (COMMIT) ---

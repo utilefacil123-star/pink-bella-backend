@@ -1,5 +1,9 @@
 require('dotenv').config();
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// PostgreSQL retorna NUMERIC e INT8 como string por padrão — converter para number
+types.setTypeParser(1700, (val) => val === null ? null : parseFloat(val)); // NUMERIC / DECIMAL
+types.setTypeParser(20,   (val) => val === null ? null : parseInt(val, 10)); // INT8 / BIGINT
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
