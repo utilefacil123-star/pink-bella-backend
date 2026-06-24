@@ -386,7 +386,8 @@ router.get('/:id/cotar-frete', async (req, res) => {
   }
 });
 
-// PUT /:id/frete — atualiza a opção de frete selecionada (apenas para compras Pendentes)
+// PUT /:id/frete — atualiza o frete selecionado (Pendente, Pago ou Pagar Etiqueta)
+// Para "Pagar Etiqueta": reseta para "Pago" e limpa a entrada velha do carrinho ME
 router.put('/:id/frete', async (req, res) => {
   const { id } = req.params;
   const { id_servico, nome_transportadora, servico, preco_frete, prazo_dias_uteis } = req.body;
@@ -402,24 +403,47 @@ router.put('/:id/frete', async (req, res) => {
     });
 
     if (!compra) return res.status(404).json({ error: 'Compra não encontrada.' });
-    if (!['Pendente', 'Pago'].includes(compra.status_compra)) {
+
+    const statusPermitidos = ['Pendente', 'Pago', 'Pagar Etiqueta'];
+    if (!statusPermitidos.includes(compra.status_compra)) {
       return res.status(400).json({ error: `Não é possível alterar o frete de uma compra com status "${compra.status_compra}".` });
     }
 
     const novoTotal = parseFloat(compra.valor_produtos) + parseFloat(preco_frete);
+    // Se estava em "Pagar Etiqueta" (já no carrinho ME), volta para "Pago" para re-adicionar depois
+    const novoStatus = compra.status_compra === 'Pagar Etiqueta' ? 'Pago' : compra.status_compra;
 
     await new Promise((resolve, reject) => {
       db.run(
         `UPDATE compras
          SET valor_frete = ?, transportadora = ?, servico_frete = ?,
-             prazo_frete_dias = ?, melhor_envio_service_id = ?, valor_total = ?
+             prazo_frete_dias = ?, melhor_envio_service_id = ?, valor_total = ?,
+             status_compra = ?
          WHERE id = ?`,
-        [preco_frete, nome_transportadora, servico, prazo_dias_uteis, id_servico, novoTotal, id],
+        [preco_frete, nome_transportadora, servico, prazo_dias_uteis, id_servico, novoTotal, novoStatus, id],
         function(err) { if (err) return reject(err); resolve(); }
       );
     });
 
-    res.json({ message: 'Frete atualizado com sucesso.', novo_total: novoTotal });
+    // Se havia entrada no carrinho ME (estava em "Pagar Etiqueta"), limpa automaticamente
+    let carrinhoLimpo = null;
+    if (compra.status_compra === 'Pagar Etiqueta') {
+      try {
+        carrinhoLimpo = await melhorEnvioService.limparCarrinhoObsoleto();
+      } catch (e) {
+        console.warn(`Aviso: não foi possível limpar carrinho ME após troca de frete: ${e.message}`);
+      }
+    }
+
+    res.json({
+      message: 'Frete atualizado com sucesso.',
+      novo_total: novoTotal,
+      status_compra: novoStatus,
+      aviso: novoStatus === 'Pago'
+        ? 'Entrada antiga removida do carrinho Melhor Envio. Clique em "Adicionar ao Carrinho" para reinserir com o novo serviço.'
+        : null,
+      carrinho_limpo: carrinhoLimpo,
+    });
   } catch (error) {
     console.error(`Erro ao atualizar frete da compra ${id}:`, error.message);
     res.status(500).json({ error: error.message || 'Erro ao atualizar frete.' });
