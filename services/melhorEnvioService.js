@@ -853,10 +853,86 @@ async function atualizarStatusComprasMelhorEnvio() {
   }
 }
 
+// Lista todos os itens do carrinho ME com seus detalhes e compra associada
+async function listarItensCarrinho() {
+  const MELHOR_ENVIO_TOKEN = await melhorEnvioAuth.getValidToken();
+  const response = await axios.get(`${MELHOR_ENVIO_URL}/me/cart`, {
+    headers: { 'Authorization': `Bearer ${MELHOR_ENVIO_TOKEN}`, 'Accept': 'application/json' }
+  });
+  const etiquetas = response.data.data || [];
+
+  const itens = etiquetas.map(e => {
+    // Extrai o ID da compra da tag "PinkBella-Compra-{id}"
+    const tag = (e.options?.tags || []).find(t => t.tag && t.tag.startsWith('PinkBella-Compra-'));
+    const compraId = tag ? parseInt(tag.tag.replace('PinkBella-Compra-', ''), 10) : null;
+    return {
+      id: e.id,
+      price: parseFloat(e.price || 0),
+      service: e.service?.name || null,
+      compraId
+    };
+  });
+
+  return itens;
+}
+
+// Remove do carrinho ME os itens que não pertencem a compras ativas (status "Pagar Etiqueta")
+async function limparCarrinhoObsoleto() {
+  const itens = await listarItensCarrinho();
+  if (itens.length === 0) return { removidos: [], mantidos: [], totalAntes: 0, totalDepois: 0 };
+
+  const totalAntes = itens.reduce((s, i) => s + i.price, 0);
+
+  // Consulta o status de cada compra referenciada
+  const idsUnicos = [...new Set(itens.map(i => i.compraId).filter(Boolean))];
+  const statusPorCompra = {};
+  for (const id of idsUnicos) {
+    const row = await new Promise((resolve, reject) => {
+      db.get('SELECT status_compra FROM compras WHERE id = ?', [id], (err, r) => {
+        if (err) return reject(err);
+        resolve(r);
+      });
+    });
+    statusPorCompra[id] = row ? row.status_compra : null;
+  }
+
+  const idsParaRemover = [];
+  const removidos = [];
+  const mantidos = [];
+
+  for (const item of itens) {
+    const status = statusPorCompra[item.compraId];
+    // Mantém apenas compras em "Pagar Etiqueta" — todo o resto é obsoleto
+    if (status === 'Pagar Etiqueta') {
+      mantidos.push(item);
+    } else {
+      idsParaRemover.push(item.id);
+      removidos.push({ ...item, statusCompra: status || 'não encontrada' });
+    }
+  }
+
+  if (idsParaRemover.length > 0) {
+    const MELHOR_ENVIO_TOKEN = await melhorEnvioAuth.getValidToken();
+    await axios.delete(`${MELHOR_ENVIO_URL}/me/cart`, {
+      headers: {
+        'Authorization': `Bearer ${MELHOR_ENVIO_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      data: { orders: idsParaRemover }
+    });
+  }
+
+  const totalDepois = mantidos.reduce((s, i) => s + i.price, 0);
+  return { removidos, mantidos, totalAntes, totalDepois };
+}
+
 module.exports = {
     calcularFrete,
     adicionarEnviosAoCarrinho,
     getTotalValorCarrinho,
+    listarItensCarrinho,
+    limparCarrinhoObsoleto,
     getBalance,
     gerarCodigoPix,
     gerarPixComValorDoCarrinho,

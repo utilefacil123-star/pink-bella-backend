@@ -186,7 +186,29 @@ router.get('/rastreios/atualizar', async (req, res) => {
     console.error('Erro ao atualizar rastreios:', error.message);
     res.status(500).json({ error: 'Erro ao atualizar rastreios.' });
   }
-    });
+});
 
+// Lista todos os itens do carrinho ME com detalhes (diagnóstico)
+router.get('/carrinho-itens', async (req, res) => {
+  try {
+    const itens = await melhorEnvioService.listarItensCarrinho();
+    const total = itens.reduce((s, i) => s + i.price, 0);
+    res.json({ total, quantidade: itens.length, itens });
+  } catch (error) {
+    console.error('Erro ao listar itens do carrinho:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remove do carrinho ME os itens de pedidos que não estão em "Pagar Etiqueta"
+router.delete('/carrinho-limpar-obsoletos', async (req, res) => {
+  try {
+    const resultado = await melhorEnvioService.limparCarrinhoObsoleto();
+    res.json(resultado);
+  } catch (error) {
+    console.error('Erro ao limpar carrinho obsoleto:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 module.exports = router;
