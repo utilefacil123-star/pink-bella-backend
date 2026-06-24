@@ -124,6 +124,9 @@ async function adicionarEnviosAoCarrinho(purchaseId) {
         c.altura_pacote AS package_height,
         c.largura_pacote AS package_width,
         c.comprimento_pacote AS package_length,
+        c.codigo_etiqueta AS codigo_etiqueta_existente,
+        c.valor_frete AS valor_frete_existente,
+        c.codigo_envio AS codigo_envio_existente,
         cli.nome AS destinatario_name,
         cli.telefone AS destinatario_phone,
         cli.email AS destinatario_email,
@@ -151,6 +154,24 @@ async function adicionarEnviosAoCarrinho(purchaseId) {
 
     if (!purchase) {
       throw new Error(`Compra ${purchaseId} não encontrada no banco de dados.`);
+    }
+
+    // Se já foi adicionada ao carrinho Melhor Envio, retorna sem duplicar
+    if (purchase.codigo_etiqueta_existente) {
+      console.log(`Compra ${purchaseId} já no carrinho ME (${purchase.codigo_etiqueta_existente}). Pulando.`);
+      return {
+        id: purchase.codigo_etiqueta_existente,
+        price: purchase.valor_frete_existente,
+        protocol: purchase.codigo_envio_existente
+      };
+    }
+
+    // Valida campos obrigatórios antes de chamar a API do Melhor Envio
+    if (!purchase.melhor_envio_service_id) {
+      throw new Error(`Compra ${purchaseId} não tem serviço de frete selecionado (melhor_envio_service_id é nulo).`);
+    }
+    if (!purchase.destinatario_postal_code) {
+      throw new Error(`Compra ${purchaseId} não tem CEP de destino.`);
     }
 
     // Busca produtos da compra
@@ -225,17 +246,17 @@ async function adicionarEnviosAoCarrinho(purchaseId) {
       },
       to: {
         name: purchase.destinatario_name,
-        phone: "+55" + String(purchase.destinatario_phone),
-        email: purchase.destinatario_email,
-        document: purchase.destinatario_document.replace(/\D/g, ''),
-        address: purchase.destinatario_address,
-        complement: purchase.destinatario_complement,
-        number: String(purchase.destinatario_number),
-        district: purchase.destinatario_district,
-        city: purchase.destinatario_city,
+        phone: "+55" + String(purchase.destinatario_phone || '').replace(/\D/g, ''),
+        email: purchase.destinatario_email || '',
+        document: (purchase.destinatario_document || '').replace(/\D/g, ''),
+        address: purchase.destinatario_address || '',
+        complement: purchase.destinatario_complement || '',
+        number: String(purchase.destinatario_number || 'S/N'),
+        district: purchase.destinatario_district || '',
+        city: purchase.destinatario_city || '',
         country_id: "BR",
-        postal_code: purchase.destinatario_postal_code.replace(/\D/g, ''),
-        state_abbr: purchase.destinatario_state_abbr
+        postal_code: (purchase.destinatario_postal_code || '').replace(/\D/g, ''),
+        state_abbr: purchase.destinatario_state_abbr || ''
       },
       service: purchase.service_id,
       volumes: [
@@ -313,57 +334,87 @@ async function verificarStatusCompra(compraId, status) {
       throw new Error('Compra não encontrada.');
     }
 
-    if (compra === status) {
-      throw new Error('Compra já esta com o status '+ status);
+    if (compra.status_compra === status) {
+      return { status_compra: compra.status_compra, aviso: 'Compra já está com este status.' };
     }
 
+    let novoStatus = null;
 
     switch (status) {
       case 'Pago':
-        // Chamar a função para adicionar ao carrinho do Melhor Envio
-        await adicionarEnviosAoCarrinho(compraId);
-        await comprasService.atualizarStatusCompra(compraId, 'Pagar Etiqueta');
+        // Atualiza para "Pago" no banco primeiro — garante que o status muda mesmo se o carrinho falhar
+        await comprasService.atualizarStatusCompra(compraId, 'Pago');
+        try {
+          await adicionarEnviosAoCarrinho(compraId);
+          await comprasService.atualizarStatusCompra(compraId, 'Pagar Etiqueta');
+          novoStatus = 'Pagar Etiqueta';
+        } catch (cartErr) {
+          // Carrinho falhou — status fica em "Pago" para o usuário tentar novamente
+          console.error(`Erro ao adicionar compra ${compraId} ao carrinho ME:`, cartErr.message);
+          return { status_compra: 'Pago', aviso: `Status atualizado para Pago, mas falhou ao adicionar ao carrinho Melhor Envio: ${cartErr.message}` };
+        }
         break;
+
       case 'Pagar Etiqueta':
-        // Chamar a função para adicionar ao carrinho do Melhor Envio
-        await adicionarEnviosAoCarrinho(compraId);
+        // Tentativa manual de (re)adicionar ao carrinho e marcar como aguardando
+        try {
+          await adicionarEnviosAoCarrinho(compraId);
+        } catch (cartErr) {
+          console.error(`Erro ao adicionar compra ${compraId} ao carrinho ME:`, cartErr.message);
+          throw cartErr;
+        }
         await comprasService.atualizarStatusCompra(compraId, 'Aguardando Etiqueta');
+        novoStatus = 'Aguardando Etiqueta';
         break;
-      //case 'pending':
-      //    console.log('entrei no pending!')
-      //    await comprasService.atualizarStatusCompra(compraId, 'Pagar Etiqueta'); 
-      //    break;
-      case 'paid':
-          await comprasService.atualizarStatusCompra(compraId, 'Pago (Aguardando Etiqueta)'); 
-          break;
-      case 'released':
-          await comprasService.atualizarStatusCompra(compraId, 'Etiqueta PDF Gerada');
-          break;
-      case 'generated':
-          await comprasService.atualizarStatusCompra(compraId, 'Etiqueta PDF Gerada');
-          break;
-      case 'pending':
-          await comprasService.atualizarStatusCompra(compraId, 'Pagar Etiqueta'); 
-          break;
-      case 'received':
-          await comprasService.atualizarStatusCompra(compraId, 'Processado'); 
-          break;
-      case 'posted':
-          await comprasService.atualizarStatusCompra(compraId, 'Postado'); 
-          break;
-      case 'delivered':
-          await comprasService.atualizarStatusCompra(compraId, 'Entregue'); 
-          break;
-      case 'canceled':
-          await comprasService.atualizarStatusCompra(compraId, 'Cancelado'); 
-          break;
+
+      case 'Aguardando Etiqueta':
+        await comprasService.atualizarStatusCompra(compraId, 'Aguardando Etiqueta');
+        novoStatus = 'Aguardando Etiqueta';
+        break;
+
+      case 'Cancelado':
       case 'Cancelada':
-          await comprasService.atualizarStatusCompra(compraId, 'Cancelado'); 
-          break;
-      // Adicionar mais casos para outros status
+      case 'canceled':
+        await comprasService.atualizarStatusCompra(compraId, 'Cancelado');
+        novoStatus = 'Cancelado';
+        break;
+
+      // Eventos do webhook Melhor Envio
+      case 'paid':
+        await comprasService.atualizarStatusCompra(compraId, 'Pago');
+        novoStatus = 'Pago';
+        break;
+      case 'pending':
+        await comprasService.atualizarStatusCompra(compraId, 'Pagar Etiqueta');
+        novoStatus = 'Pagar Etiqueta';
+        break;
+      case 'released':
+      case 'generated':
+        await comprasService.atualizarStatusCompra(compraId, 'Etiqueta PDF Gerada');
+        novoStatus = 'Etiqueta PDF Gerada';
+        break;
+      case 'posted':
+        await comprasService.atualizarStatusCompra(compraId, 'Postado');
+        novoStatus = 'Postado';
+        break;
+      case 'received':
+        await comprasService.atualizarStatusCompra(compraId, 'Processado');
+        novoStatus = 'Processado';
+        break;
+      case 'delivered':
+        await comprasService.atualizarStatusCompra(compraId, 'Entregue');
+        novoStatus = 'Entregue';
+        break;
+
       default:
+        // Status interno direto (ex: "Postado", "Processado" vindos do frontend)
+        await comprasService.atualizarStatusCompra(compraId, status);
+        novoStatus = status;
         break;
     }
+
+    return { status_compra: novoStatus };
+
   } catch (error) {
     console.error('Erro ao verificar status da compra:', error.message);
     throw error;

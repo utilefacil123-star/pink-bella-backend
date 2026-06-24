@@ -327,7 +327,7 @@ router.get('/', async (req, res) => {
 
         } catch (error) {
             console.error('Erro ao atualizar status da compra:', error.message);
-            res.status(500).json({ error: 'Erro interno do servidor ao atualizar o status.' });
+            res.status(500).json({ error: error.message || 'Erro interno do servidor ao atualizar o status.' });
         }
     });
 
