@@ -345,4 +345,85 @@ router.put('/:id', async (req, res) => {
 });
     
 
+// GET /:id/cotar-frete — recalcula todas as opções de frete para uma compra existente
+router.get('/:id/cotar-frete', async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Busca CEP do endereço de entrega e total de itens
+    const row = await new Promise((resolve, reject) => {
+      db.get(
+        `SELECT e.cep, (SELECT SUM(ic.quantidade) FROM itens_compra ic WHERE ic.compra_id = c.id) AS total_itens
+         FROM compras c
+         JOIN enderecos e ON e.id = c.endereco_entrega_id
+         WHERE c.id = ?`,
+        [id],
+        (err, r) => { if (err) return reject(err); resolve(r); }
+      );
+    });
+
+    if (!row) return res.status(404).json({ error: 'Compra não encontrada.' });
+
+    const cep = (row.cep || '').replace(/\D/g, '');
+    const totalItens = parseInt(row.total_itens) || 1;
+
+    const opcoesBrutas = await calcularFrete(cep, totalItens);
+    const opcoes = opcoesBrutas
+      .filter(o => o.price !== null && o.error === undefined)
+      .map(o => ({
+        id_servico: o.id,
+        nome_transportadora: o.company.name,
+        logo_transportadora: o.company.picture || null,
+        servico: o.name,
+        preco_frete: parseFloat(o.price),
+        prazo_dias_uteis: parseInt(o.delivery_time),
+      }))
+      .sort((a, b) => a.preco_frete - b.preco_frete);
+
+    res.json({ opcoes_frete: opcoes, cep_destino: cep, total_itens: totalItens });
+  } catch (error) {
+    console.error(`Erro ao cotar frete para compra ${id}:`, error.message);
+    res.status(500).json({ error: error.message || 'Erro ao calcular frete.' });
+  }
+});
+
+// PUT /:id/frete — atualiza a opção de frete selecionada (apenas para compras Pendentes)
+router.put('/:id/frete', async (req, res) => {
+  const { id } = req.params;
+  const { id_servico, nome_transportadora, servico, preco_frete, prazo_dias_uteis } = req.body;
+
+  if (!id_servico || !preco_frete) {
+    return res.status(400).json({ error: 'Informe id_servico e preco_frete.' });
+  }
+
+  try {
+    const compra = await new Promise((resolve, reject) => {
+      db.get('SELECT status_compra, valor_produtos FROM compras WHERE id = ?', [id],
+        (err, r) => { if (err) return reject(err); resolve(r); });
+    });
+
+    if (!compra) return res.status(404).json({ error: 'Compra não encontrada.' });
+    if (!['Pendente', 'Pago'].includes(compra.status_compra)) {
+      return res.status(400).json({ error: `Não é possível alterar o frete de uma compra com status "${compra.status_compra}".` });
+    }
+
+    const novoTotal = parseFloat(compra.valor_produtos) + parseFloat(preco_frete);
+
+    await new Promise((resolve, reject) => {
+      db.run(
+        `UPDATE compras
+         SET valor_frete = ?, transportadora = ?, servico_frete = ?,
+             prazo_frete_dias = ?, melhor_envio_service_id = ?, valor_total = ?
+         WHERE id = ?`,
+        [preco_frete, nome_transportadora, servico, prazo_dias_uteis, id_servico, novoTotal, id],
+        function(err) { if (err) return reject(err); resolve(); }
+      );
+    });
+
+    res.json({ message: 'Frete atualizado com sucesso.', novo_total: novoTotal });
+  } catch (error) {
+    console.error(`Erro ao atualizar frete da compra ${id}:`, error.message);
+    res.status(500).json({ error: error.message || 'Erro ao atualizar frete.' });
+  }
+});
+
     module.exports = router;
