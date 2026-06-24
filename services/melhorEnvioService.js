@@ -334,7 +334,9 @@ async function verificarStatusCompra(compraId, status) {
       throw new Error('Compra não encontrada.');
     }
 
-    if (compra.status_compra === status) {
+    // Bloqueia apenas status que não têm ação útil ao repetir
+    const statusIdempotentes = ['Cancelado', 'Entregue', 'Postado', 'Processado'];
+    if (compra.status_compra === status && statusIdempotentes.includes(status)) {
       return { status_compra: compra.status_compra, aviso: 'Compra já está com este status.' };
     }
 
