@@ -131,17 +131,17 @@ async function adicionarEnviosAoCarrinho(purchaseId) {
         cli.telefone AS destinatario_phone,
         cli.email AS destinatario_email,
         cli.cpf AS destinatario_document,
-        end.logradouro AS destinatario_address,
-        end.complemento AS destinatario_complement,
-        end.numero AS destinatario_number,
-        end.bairro AS destinatario_district,
-        end.cidade AS destinatario_city,
-        end.estado AS destinatario_state_abbr,
-        end.cep AS destinatario_postal_code,
+        en.logradouro AS destinatario_address,
+        en.complemento AS destinatario_complement,
+        en.numero AS destinatario_number,
+        en.bairro AS destinatario_district,
+        en.cidade AS destinatario_city,
+        en.estado AS destinatario_state_abbr,
+        en.cep AS destinatario_postal_code,
         'BR' AS destinatario_country_id
       FROM compras c
       JOIN clientes cli ON cli.id = c.cliente_id
-      JOIN enderecos end ON end.id = c.endereco_entrega_id
+      JOIN enderecos en ON en.id = c.endereco_entrega_id
       WHERE c.id = ?
     `;
 
@@ -167,7 +167,7 @@ async function adicionarEnviosAoCarrinho(purchaseId) {
     }
 
     // Valida campos obrigatórios antes de chamar a API do Melhor Envio
-    if (!purchase.melhor_envio_service_id) {
+    if (!purchase.service_id) {
       throw new Error(`Compra ${purchaseId} não tem serviço de frete selecionado (melhor_envio_service_id é nulo).`);
     }
     if (!purchase.destinatario_postal_code) {
